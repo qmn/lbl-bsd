@@ -2,7 +2,7 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 
-#include "global.h"
+#include "proc.h"
 #include "i2c.h"
 
 #define I2C_PS 1
@@ -39,7 +39,7 @@ uint8_t * volatile i2c_data_tx;
 #define I2C_OPC_MASK 0x01
 #define IS_HALT(op) ((op)->sla == 0x01)
 
-#define I2C_RESUME  ((1 << TWINT) | (1 << TWEN))
+#define I2C_CTRL_RESUME  ((1 << TWINT) | (1 << TWEN))
 
 ISR(TWI_vect) {
 	static struct i2c_op *op;
@@ -68,14 +68,14 @@ ISR(TWI_vect) {
 				TWDR = (op->sla & I2C_SLA_MASK) | I2C_READ; /* SLA+R */
 				/* Transition to I2C_SC_MRX_SLA_ACK */
 			}
-			TWCR = I2C_RESUME | (1 << TWIE);
+			TWCR = I2C_CTRL_RESUME | (1 << TWIE);
 			break;
 
 		case I2C_SC_MTX_SLA_ACK: /* acknowledgement from slave */
 			count = op->len;
 			/* Transmit register address */
 			TWDR = op->reg;
-			TWCR = I2C_RESUME | (1 << TWIE);
+			TWCR = I2C_CTRL_RESUME | (1 << TWIE);
 			/* Transition to I2C_SC_MTX_DATA_ACK */
 			break;
 
@@ -85,18 +85,18 @@ ISR(TWI_vect) {
 					count--;
 					/* Transmit data byte */
 					TWDR = *tx++;
-					TWCR = I2C_RESUME | (1 << TWIE);
+					TWCR = I2C_CTRL_RESUME | (1 << TWIE);
 					/* Transition to I2C_SC_MTX_DATA_ACK */
 					break;
 				} else if (op++, IS_HALT(op)) {
 					/* Transmit stop condition and halt */
-					TWCR = I2C_RESUME | (1 << TWSTO);
-					status |= STATUS_I2C;
+					TWCR = I2C_CTRL_RESUME | (1 << TWSTO);
+					status |= FLAG_I2C;
 					break;
 				}
 			}
 			/* Retransmit start condition */
-			TWCR = I2C_RESUME | (1 << TWSTA) | (1 << TWIE);
+			TWCR = I2C_CTRL_RESUME | (1 << TWSTA) | (1 << TWIE);
 			/* Transition to I2C_SC_RESTART */
 			break;
 
@@ -104,11 +104,11 @@ ISR(TWI_vect) {
 			/* TODO: handle (count == 0) */
 			if (--count > 0) {
 				/* Transmit ACK to initiate data read */
-				TWCR = I2C_RESUME | (1 << TWIE) | (1 << TWEA);
+				TWCR = I2C_CTRL_RESUME | (1 << TWIE) | (1 << TWEA);
 				/* Transition to I2C_SC_MRX_DATA_ACK */
 			} else {
 				/* Transmit NACK to initiate a single-byte read */
-				TWCR = I2C_RESUME | (1 << TWIE) | (0 << TWEA);
+				TWCR = I2C_CTRL_RESUME | (1 << TWIE) | (0 << TWEA);
 				/* Transition to I2C_SC_MRX_DATA_NACK */
 			}
 			break;
@@ -117,10 +117,10 @@ ISR(TWI_vect) {
 			*rx++ = TWDR; /* data byte */
 			if (--count > 0) {
 				/* Transmit ACK to continue data read */
-				TWCR = I2C_RESUME | (1 << TWIE) | (1 << TWEA);
+				TWCR = I2C_CTRL_RESUME | (1 << TWIE) | (1 << TWEA);
 				/* Transition to I2C_SC_MRX_DATA_ACK */
 			} else { /* Transmit NACK to indicate stop after next data byte */
-				TWCR = I2C_RESUME | (1 << TWIE) | (0 << TWEA);
+				TWCR = I2C_CTRL_RESUME | (1 << TWIE) | (0 << TWEA);
 				/* Transition to I2C_SC_MRX_DATA_NACK */
 			}
 			break;
@@ -129,46 +129,47 @@ ISR(TWI_vect) {
 			*rx++ = TWDR; /* last data byte */
 			if (op++, IS_HALT(op)) {
 				/* Transmit stop condition and halt */
-				TWCR = I2C_RESUME | (1 << TWSTO);
-				status |= STATUS_I2C;
+				TWCR = I2C_CTRL_RESUME | (1 << TWSTO);
+				status |= FLAG_I2C;
 			} else {
 				/* Retransmit start condition to continue
 				   onto next operation in routine */
-				TWCR = I2C_RESUME | (1 << TWSTA) | (1 << TWIE);
+				TWCR = I2C_CTRL_RESUME | (1 << TWSTA) | (1 << TWIE);
 				/* Transition to I2C_SC_RESTART */
 			}
 			break;
-
+/*
 		default:
 			DDRB |= (1 << PB5);
 			PORTB |= (1 << PB5);
+*/
 	}
 }
 
 #define i2c_spin(b) do {} while ((TWCR & (1 << (b))) == 0)
 
-void i2c_tx(const struct i2c_op *op, const uint8_t *tx) {
+void i2c_send(const struct i2c_op *op, const uint8_t *tx) {
 	for (; !(IS_HALT(op)); op++) {
 		uint8_t i;
 		/* Transmit start condition */
-		TWCR = I2C_RESUME | (1 << TWSTA);
+		TWCR = I2C_CTRL_RESUME | (1 << TWSTA);
 		i2c_spin(TWINT);
 		/* Transmit SLA+W */
 		TWDR = (op->sla & I2C_SLA_MASK) | I2C_WRITE;
-		TWCR = I2C_RESUME;
+		TWCR = I2C_CTRL_RESUME;
 		i2c_spin(TWINT);
 		/* Transmit register address */
 		TWDR = op->reg;
-		TWCR = I2C_RESUME;
+		TWCR = I2C_CTRL_RESUME;
 		i2c_spin(TWINT);
 		/* Transmit data bytes */
 		for (i = op->len; i > 0; i--) {
 			TWDR = *tx++;
-			TWCR = I2C_RESUME;
+			TWCR = I2C_CTRL_RESUME;
 			i2c_spin(TWINT);
 		}
 	}
 	/* Transmit stop condition */
-	TWCR = I2C_RESUME | (1 << TWSTO);
+	TWCR = I2C_CTRL_RESUME | (1 << TWSTO);
 	i2c_spin(TWSTO);
 }

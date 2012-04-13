@@ -6,6 +6,10 @@ accum_t muls16q(accum_t a, accum_t b) {
 	return muls16q_inline(a, b);
 }
 
+accum_t mulsu16x8q(accum_t a, us_accum_t b) {
+	return mulsu16x8q_inline(a, b);
+}
+
 void cross3q(accum_t *c, const accum_t *a, const accum_t *b) {
 	c[0] = muls16q(a[1], b[2]) - muls16q(a[2], b[1]);
 	c[1] = muls16q(a[2], b[0]) - muls16q(a[0], b[2]);
@@ -191,30 +195,30 @@ accum_t atan2q(accum_t y, accum_t x) {
 	);
 	return z;
 #else
-    accum_t z;
-    uint8_t i;
-    z = 0;
-    if (x < 0) {
-        x = -x; 
-        y = -y; 
-        z = (y < 0) ? (M_PI) : -(M_PI);
-    }   
-    for (i = 0; i < 8; i++) {
-        accum_t dx, dy, dz; 
-        dx = (y >> i); 
-        dy = (x >> i); 
-        dz = cordic_lut[i];
-        if (y >= 0) {
-            x += dx; 
-            y -= dy; 
-            z += dz; 
-        } else {
-            x -= dx; 
-            y += dy; 
-            z -= dz; 
-        }   
-    }   
-    return z;
+	accum_t z;
+	uint8_t i;
+	z = 0;
+	if (x < 0) {
+		x = -x; 
+		y = -y; 
+		z = (y < 0) ? (M_PI) : -(M_PI);
+	}   
+	for (i = 0; i < 8; i++) {
+		accum_t dx, dy, dz; 
+		dx = (y >> i); 
+		dy = (x >> i); 
+		dz = cordic_lut[i];
+		if (y >= 0) {
+			x += dx; 
+			y -= dy; 
+			z += dz; 
+		} else {
+			x -= dx; 
+			y += dy; 
+			z -= dz; 
+		}
+	}
+	return z;
 #endif
 }
 

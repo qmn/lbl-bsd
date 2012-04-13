@@ -74,7 +74,7 @@ union sen_buf {
 		uint16_t gps_lat_min;
 		uint16_t gps_lon_min;
 		uint16_t gps_speed;
-		uint16_t gps_course;
+		uint16_t gps_cog;
 		uint8_t gps_mon;
 		uint8_t gps_day;
 		uint16_t gps_time;

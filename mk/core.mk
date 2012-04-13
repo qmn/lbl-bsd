@@ -38,7 +38,7 @@ endif
 %.o : %.S
 	$(CC) $(CFLAGS) $(AFLAGS) $(addprefix -I,$(INCDIR)) -c -o $@ $<
 %:
-	$(CC) $(LDFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 %.hex: %
 	$(OBJCOPY) $(OBJCOPYFLAGS) $< $@
 
