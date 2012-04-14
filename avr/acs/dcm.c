@@ -6,42 +6,8 @@
 #include "fix.h"
 #include "usart.h"
 #include "timer.h"
+#include "debug.h"
 
-static void _put(uint16_t a, uint16_t b, uint16_t c, uint16_t d) {
-	static uint8_t count = 50;
-	static uint8_t hex[] = {
-		'0', '1', '2', '3', '4', '5', '6', '7',
-		'8', '9', 'A', 'B', 'C', 'D', 'E', 'F'
-	};
-	static uint8_t buf[18] = {
-		'\0', '\0', '\0', '\0',
-		'\0', '\0', '\0', '\0',
-		'\0', '\0', '\0', '\0',
-		'\0', '\0', '\0', '\0',
-		'\r', '\n',
-	};
-	if (--count > 0) {
-		return;
-	}
-	buf[0] = hex[(a >> 12)];
-	buf[1] = hex[(a >> 8) & 0xF];
-	buf[2] = hex[(a >> 4) & 0xF];
-	buf[3] = hex[(a & 0xF)];
-	buf[4] = hex[(b >> 12)];
-	buf[5] = hex[(b >> 8) & 0xF];
-	buf[6] = hex[(b >> 4) & 0xF];
-	buf[7] = hex[(b & 0xF)];
-	buf[8]  = hex[(c >> 12)];
-	buf[9]  = hex[(c >> 8) & 0xF];
-	buf[10] = hex[(c >> 4) & 0xF];
-	buf[11] = hex[(c & 0xF)];
-	buf[12]  = hex[(d >> 12)];
-	buf[13]  = hex[(d >> 8) & 0xF];
-	buf[14] = hex[(d >> 4) & 0xF];
-	buf[15] = hex[(d & 0xF)];
-	usart_write(buf, sizeof(buf));
-	count = 50;
-}
 
 volatile uint8_t status = FLAG_I2C;
 
@@ -155,11 +121,12 @@ static inline void _dcm_renorm(void) {
 #define ACCEL_Z_BIAS 4     /* Q16.0 */
 #define ACCEL_Z_SENS 8     /* Q3.13: (1 / 1002.12) */
 #define ROT_DT 82          /* Q3.13: 0.01 */
-#define COR_RP_KI 1      /* Q3.13: (0.1 * IMU_DT) */
-#define COR_RP_KP 2300   /* Q3.13: 0.2 */
-#define COR_YAW_KI 0
-#define COR_YAW_KP 7373
-#define COG_DEG_RAD 14     /* Q3.13: (M_PI / 1800) */
+#define COR_RP_KI  77
+#define COR_RP_KP  2000
+#define COR_YAW_KI 50
+#define COR_YAW_KP 3000
+#define COG_DECI_DEG 819    /* Q3.13: 0.1 */
+#define COG_DEG_RAD  143    /* Q3.13: (M_PI / 1800) */
 
 void _dcm_update(struct sen_data *sen) {
 	static accum_t cor_y_i[3] = { ACCUM_0, ACCUM_0, ACCUM_0 };
@@ -184,41 +151,49 @@ void _dcm_update(struct sen_data *sen) {
 	/* Yaw correction */
 	if (status & FLAG_GPS) {
 		int32_t cog;
-		cog = (uint16_t)muls16_inline(sen->gps_cog, COG_DEG_RAD);
+		/* Conversion order selected to prevent overflow */
+		cog = (uint16_t)(muls16_inline(
+			muls16q(sen->gps_cog, COG_DECI_DEG), COG_DEG_RAD));
 		if (cog >= M_PI)
 			cog -= M_2_PI;
+		sen->gps_cog = cog;
 		cog -= yaw;
-		if (cog >= M_PI)
+		if (cog >= M_PI) {
 			cog -= M_2_PI;
-		else if (cog < -(M_PI))
+		} else if (cog < -(M_PI)) {
 			cog += M_2_PI;
+		}
 		cor_y_wt = cog;
-		cor_y_wt = -yaw;
+	/*
+		print(pitch);
+		print(yaw);
+		print(sen->gps_cog);
+		print(sen->gps_lat_min);
+		print(sen->gps_lon_min);
+		flush();
+	*/
 	}
 	i = 0;
 	do {
 		accum_t err_yaw;
 		err_yaw       = muls16q(dcm[2][i], cor_y_wt);
-		cor_y_i[i]   += mulsu16x8q(err_yaw, COR_YAW_KI);
-		sen->gyro[i] += muls16q(err_yaw, COR_YAW_KP) + cor_y_i[i];
+		cor_y_i[i]   += mulsu16x8q(err_yaw, ROT_DT);
+		sen->gyro[i] += muls16q(err_yaw, COR_YAW_KP)
+		              + mulsu16x8q(cor_y_i[i], COR_YAW_KI);
 	} while (++i < 3);
 
 	/* Roll-pitch correction */
 	cross3q(err_p, (const accum_t *)(sen->accl), dcm[2]);
 	/* (COR_KI * IMU_DT) ~ 32 = 2^5 */
-	accum_t c;
-	cor_p_i[0]   += mulsu16x8q(err_p[0], COR_RP_KI);
-	sen->gyro[0] += muls16q(err_p[0], COR_RP_KP) + cor_p_i[0];
+	cor_p_i[0]   += mulsu16x8q(err_p[0], ROT_DT);
+	sen->gyro[0] += muls16q(err_p[0], COR_RP_KP)
+	              + mulsu16x8q(cor_p_i[0], COR_RP_KI);
 	cor_p_i[1]   += mulsu16x8q(err_p[1], ROT_DT);
-	c = muls16q(err_p[1], COR_RP_KP) +
-		mulsu16x8q(cor_p_i[1], COR_RP_KI);
-
-	_put(c, sen->gyro[1], c + sen->gyro[1], pitch);
-
-	sen->gyro[1] += c;
-//	sen->gyro[1] += muls16q(err_p[1], COR_RP_KP) + cor_p_i[1];
-	cor_p_i[2]   += mulsu16x8q(err_p[2], COR_RP_KI);
-	sen->gyro[2] += muls16q(err_p[2], COR_RP_KP) + cor_p_i[2];
+	sen->gyro[1] += muls16q(err_p[1], COR_RP_KP)
+	              + mulsu16x8q(cor_p_i[1], COR_RP_KI);
+	cor_p_i[2]   += mulsu16x8q(err_p[2], ROT_DT);
+	sen->gyro[2] += muls16q(err_p[2], COR_RP_KP)
+	              + mulsu16x8q(cor_p_i[2], COR_RP_KI);
 
 	dgx = mulsu16x8q(sen->gyro[0], ROT_DT);
 	dgy = mulsu16x8q(sen->gyro[1], ROT_DT);
@@ -268,6 +243,7 @@ static void _pwm_update(void) {
 	pwm_rud = pwm;
 }
 
+extern accum_t cordic(accum_t, accum_t);
 int main(void) {
 	timer_init();
 	i2c_init();
@@ -284,8 +260,7 @@ int main(void) {
 			sdr = (_status & SEL_SEN_ZBUF) ?
 				&(sen_zbuf[0].field) : &(sen_zbuf[1].field);
 			_dcm_update(sdr);
-
-			_pwm_update();
+		//	_pwm_update();
 			_status |= FLAG_DCM;
 			status = _status;
 		}

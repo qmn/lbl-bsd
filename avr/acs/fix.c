@@ -91,35 +91,24 @@ accum_t asinq(accum_t x) {
 	return (neg ? -x : x);
 }
 
-static accum_t cordic_lut[] = {
-	0x1922,
-	0x0ed6,
-	0x07d7,
-	0x03fb,
-	0x01ff,
-	0x0100,
-	0x0080,
-	0x0040,
-	0x0020,
-	0x0010,
-	0x0008,
-	0x0004,
-	0x0002,
-	0x0001,
+/* CORDIC rotation angles */
+static accum_t cordic_lut[14] = {
+	0x1922, 0x0ed6, 0x07d7, 0x03fb, 0x01ff, 0x0100, 0x0080,
+	0x0040, 0x0020, 0x0010, 0x0008, 0x0004, 0x0002, 0x0001,
 };
 
 accum_t atan2q(accum_t y, accum_t x) {
-#if !defined(__GNUC__) && defined(__AVR__)
-	/* Use optimized assembly version */
+#if defined(__GNUC__) && defined(__AVR__) && (__AVR_ARCH__ == 5)
+	/* Use optimized assembly version if appropriate */
 	accum_t z;
 	/* y: r24 r25; x: r22 r23 */
 	__asm__ __volatile__ (
-		/* r1 (zero register) assumed cleared */
-		"clr r0"         "\n\t" /* i = 0 */
-		"movw %A0, r0"   "\n\t" /* z = 0 */
+		"clr %A0"        "\n\t" /* z = 0 */
+		"clr %B0"        "\n\t"
+		"clr r20"        "\n\t" /* i = 0 */
 		/* Perform quadrant adjustments if (x < 0) */
-		"sbrs %B1, 7"    "\n\t"
-		"rjmp 2f"        "\n\t" /* else goto label 2 */
+		"tst %B1"        "\n\t"
+		"brpl 2f"        "\n\t" /* else goto label 2 */
 		"com %B1"        "\n\t" /* x = -x */
 		"neg %A1"        "\n\t"
 		"sbci %B1, 0xFF" "\n\t"
@@ -127,71 +116,94 @@ accum_t atan2q(accum_t y, accum_t x) {
 		"neg %A2"        "\n\t"
 		"sbci %B2, 0xFF" "\n\t"
 		/* Initialize angle accumulator with offset */
-		"sbrs %B2, 7"    "\n\t"
-		"rjmp 1f"        "\n\t" /* goto label 1 if (y >= 0) */ 
+		"tst %B2"        "\n\t"
+		"brpl 1f"        "\n\t" /* goto label 1 if (y >= 0) */ 
 		"ldi %A0, 0x88"  "\n\t" /* z = 0x6488 (Q3.13 M_PI) */
 		"ldi %B0, 0x64"  "\n\t"
-		/* Explicitly handle starting edge case to eliminate
-		   initial condition check for shift loop */
-		"movw r16, %A1"  "\n\t" /* dx = x */
-		"movw r18, %A2"  "\n\t" /* dy = y */
-		"rjmp 4f"        "\n\t"
+		"rjmp 2f"        "\n\t"
 	"1:"
 		"ldi %A0, 0x78"  "\n\t" /* z = 0x9B78 (Q3.13 -M_PI) */
 		"ldi %B0, 0x9B"  "\n\t"
-		/* Explicitly handle starting edge case to eliminate
-		   initial condition check for shift loop */
-		"movw r16, %A1"  "\n\t" /* dx = x */
-		"movw r18, %A2"  "\n\t" /* dy = y */
-		"rjmp 4f"        "\n\t"
-		/* Enter main loop */
 	"2:"
-		"movw r16, %A1"  "\n\t" /* dx = x */
-		"movw r18, %A2"  "\n\t" /* dy = y */
-		"mov r1, r0"     "\n\t" /* j = i */
-		/* Shift */
+		/* Explicitly handle starting edge case to eliminate
+		   initial condition check before the shift loop */
+		"movw r16, %A2"  "\n\t" /* dx = y */
+		"movw r18, %A1"  "\n\t" /* dy = x */
+		"rjmp 7f"        "\n\t"
 	"3:"
+		/* Enter main loop */
+		"movw r16, %A2"  "\n\t" /* dx = y */
+		"movw r18, %A1"  "\n\t" /* dy = x */
+		"mov r21, r20"   "\n\t" /* j = i */
+		"cpi r20, 8"     "\n\t"
+		"brlo 6f"        "\n\t" /* goto label 7 if (i < 8) */
+
+		/* Reduce work by observing that a right shift by 8 is
+		   equivalent to moving the high byte into the low byte
+		   of a 16-bit word */
+		"mov r16, r17"   "\n\t" /* dx >>= 8 */
+		"mov r18, r19"   "\n\t" /* dy >>= 8 */
+		"andi r21, 0x7"  "\n\t" /* j -= 8 */
+		"breq 5f"        "\n\t" /* skip shift if (j == 0) */
+		/* Shift low bytes by remaining amount */
+	"4:"
+		"asr r16"        "\n\t" /* dx >>= 1 */
+		"asr r18"        "\n\t" /* dy >>= 1 */
+		"dec r21"        "\n\t" /* j-- */
+		"brne 4b"        "\n\t" /* repeat while (j > 0) */
+	"5:"
+		"clr r17"        "\n\t"
+		"clr r19"        "\n\t"
+		"sbrc r16, 7"    "\n\t" /* sign-extend dx */
+		"ser r17"        "\n\t"
+		"sbrc r18, 7"    "\n\t" /* sign-extend dy */
+		"ser r19"        "\n\t"
+		"rjmp 7f"        "\n\t" /* goto label 7 */
+		/* For amounts less than 8, shift 16-bit words
+		   by carry through normal procedure */
+	"6:"
 		"asr r17"        "\n\t" /* dx >>= 1 */
 		"ror r16"        "\n\t"
 		"asr r19"        "\n\t" /* dy >>= 1 */
 		"ror r18"        "\n\t"
-		"dec r1"         "\n\t" /* j-- */
-		"brne 3b"        "\n\t" /* repeat while (j > 0) */
-		/* r1 register implictly cleared by shift loop */
-	"4:"
-		"ld r20, Z+"     "\n\t" /* dz = *cordic_lut++ */
-		"ld r21, Z+"     "\n\t"
-		"inc r0"         "\n\t" /* i++ */
-		/* Accumulate */
-		"sbrc %B2, 7"    "\n\t"
-		"rjmp 5f"        "\n\t" /* goto label 5 if (y < 0) */
+		"dec r21"        "\n\t" /* j-- */
+		"brne 6b"        "\n\t" /* repeat while (j > 0) */
+
+		/* Update coordinates and angle accumulator */
+	"7:"
+		"ld r0, Z+"      "\n\t" /* dz = *cordic_lut++ */
+		"ld r1, Z+"      "\n\t"
+		"inc r20"        "\n\t" /* i++ */
+		"tst %B2"        "\n\t"
+		"brmi 8f"        "\n\t" /* goto label 8 if (y < 0) */
 		"add %A1, r16"   "\n\t" /* x += dx */
 		"adc %B1, r17"   "\n\t"
 		"sub %A2, r18"   "\n\t" /* y -= dy */
 		"sbc %B2, r19"   "\n\t"
-		"add %A0, r20"   "\n\t" /* z += dz */
-		"adc %B0, r21"   "\n\t"
-		"mov r16, r0"    "\n\t"
-		"cpi r16, 8"     "\n\t"
-		"brlo 2b"        "\n\t" /* repeat while (i < 8) */
-		"rjmp 6f"        "\n\t"
-	"5:"
+		"add %A0, r0"    "\n\t" /* z += dz */
+		"adc %B0, r1"    "\n\t"
+		"cpi r20, 12"    "\n\t"
+		"brlo 3b"        "\n\t" /* repeat while (i < 12) */
+		"rjmp 9f"        "\n\t" /* done */
+	"8:"
 		"sub %A1, r16"   "\n\t" /* x -= dx */
 		"sbc %B1, r17"   "\n\t"
 		"add %A2, r18"   "\n\t" /* y += dy */
 		"adc %B2, r19"   "\n\t"
-		"sub %A0, r20"   "\n\t" /* z -= dz */
-		"sbc %B0, r21"   "\n\t"
-		"mov r16, r0"    "\n\t"
-		"cpi r16, 8"     "\n\t"
-		"brlo 2b"        "\n\t" /* repeat while (i < 8) */
-	"6:"
+		"sub %A0, r0"    "\n\t" /* z -= dz */
+		"sbc %B0, r1"    "\n\t"
+		"cpi r20, 12"    "\n\t"
+		"brlo 3b"        "\n\t" /* repeat while (i < 12) */
+	"9:"
+		/* r1 implicitly cleared when loaded with a zero
+		   byte from CORDIC LUT */
 		: "=&r" (z)
 		: "r" (x), "r" (y), "z" (cordic_lut)
 		: /* Temporary variables */
+			"r1",  "r0",  /* dz */
 			"r16", "r17", /* dx */
 			"r18", "r19", /* dy */
-			"r20", "r21"  /* dz */
+			"r20", "r21"  /* i, j */
 	);
 	return z;
 #else
@@ -203,7 +215,7 @@ accum_t atan2q(accum_t y, accum_t x) {
 		y = -y; 
 		z = (y < 0) ? (M_PI) : -(M_PI);
 	}   
-	for (i = 0; i < 8; i++) {
+	for (i = 0; i < 12; i++) {
 		accum_t dx, dy, dz; 
 		dx = (y >> i); 
 		dy = (x >> i); 
